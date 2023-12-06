@@ -19,14 +19,14 @@
   "module": "dist/av-cliper.js",
   "main": "dist/av-cliper.umd.cjs",
   "scripts": {
-    "dev": "vite demo --host 0.0.0.0 --port 6066",
-    "test": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "yarn build",
     "build": "vite build && tsc -p build.tsconfig.json --outDir dist",
     "build:dev": "rimraf dist && concurrently --kill-others \"vite build --watch\" \"tsc -p build.tsconfig.json --outDir dist --watch\"",
-    "build:demo": "rimraf demo-dist && vite build -c demo.vite.config.ts && cp -r demo/public demo-dist/demo",
-    "prepublishOnly": "yarn build",
-    "preview": "vite preview"
+    "dev:demo": "vite -c vite.config.demo.ts",
+    "build:demo": "vite build -c vite.config.demo.ts",
+    "preview:demo": "vite preview -c vite.config.demo.ts",
+    "test": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "files": [
     "dist"

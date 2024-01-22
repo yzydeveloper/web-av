@@ -1,8 +1,8 @@
 import {
-  AudioSprite,
   AVCanvas,
-  FontSprite,
+  AudioSprite,
   ImgSprite,
+  TextSprite,
   VideoSprite,
 } from '@webav/av-canvas';
 import { AVRecorder } from '@webav/av-recorder';
@@ -99,6 +99,7 @@ export default function UI() {
           const vs = new VideoSprite(
             'video',
             await loadFile({ 'video/*': ['.webm', '.mp4'] }),
+            { audioCtx: avCvs.spriteManager.audioCtx },
           );
           await avCvs.spriteManager.addSprite(vs);
         }}
@@ -112,6 +113,7 @@ export default function UI() {
           const as = new AudioSprite(
             'audio',
             await loadFile({ 'audio/*': ['.mp3', '.wav', '.ogg'] }),
+            { audioCtx: avCvs.spriteManager.audioCtx },
           );
           await avCvs.spriteManager.addSprite(as);
         }}
@@ -122,7 +124,7 @@ export default function UI() {
       <Button
         onClick={async () => {
           if (avCvs == null) return;
-          const fs = new FontSprite('font', '示例文字');
+          const fs = new TextSprite('text', '示例文字');
           await avCvs.spriteManager.addSprite(fs);
         }}
       >

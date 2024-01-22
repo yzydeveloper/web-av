@@ -5,21 +5,22 @@ import mp4box, {
   MP4Sample,
   SampleOpts,
   TrakBoxParser,
-  VideoTrackOpts,
-  AudioTrackOpts
 } from '@webav/mp4box.js'
-import { Log } from './log'
+import { Log } from '../log'
 import {
   autoReadStream,
   extractPCM4AudioData,
   extractPCM4AudioBuffer,
   mixinPCM,
   ringSliceFloat32Array,
-  sleep,
   concatPCMFragments
-} from './av-utils'
-import { DEFAULT_AUDIO_CONF } from './clips'
-import { EventTool } from './event-tool'
+} from '../av-utils'
+import { DEFAULT_AUDIO_CONF } from '../clips'
+import { EventTool } from '../event-tool'
+import { SampleTransform } from './sample-transform'
+import { extractFileConfig, sample2ChunkOpts } from './mp4box-utils'
+
+export { MP4Previewer } from './mp4-previewer'
 
 type TCleanFn = () => void
 
@@ -28,6 +29,7 @@ interface IWorkerOpts {
     width: number
     height: number
     expectFPS: number
+    codec: string
   }
   audio: {
     codec: 'opus' | 'aac'
@@ -89,14 +91,19 @@ export function demuxcode(
       },
       onChunk: async ({ chunkType, data }) => {
         if (chunkType === 'ready') {
-          Log.info('demuxcode chunk ready')
+          Log.info('demuxcode chunk ready, info:', data)
           mp4File = data.file
           mp4Info = data.info
           const { videoDecoderConf, audioDecoderConf } = extractFileConfig(
             data.file,
             data.info
           )
-          if (videoDecoderConf != null) vdecoder.configure(videoDecoderConf)
+
+          if (videoDecoderConf != null) {
+            vdecoder.configure(videoDecoderConf)
+          } else {
+            throw new Error('MP4 file does not include a video track or uses an unsupported codec')
+          }
           if (opts.audio && audioDecoderConf != null) {
             adecoder.configure(audioDecoderConf)
           }
@@ -220,7 +227,7 @@ function encodeVideoTrack(
     width: opts.video.width,
     height: opts.video.height,
     brands: ['isom', 'iso2', 'avc1', 'mp42', 'mp41'],
-    avcDecoderConfigRecord: null as AllowSharedBufferSource | undefined | null
+    avcDecoderConfigRecord: null as ArrayBuffer | undefined | null
   }
 
   let trackId: number
@@ -236,7 +243,7 @@ function encodeVideoTrack(
   })
   const encoder = createVideoEncoder(opts, (chunk, meta) => {
     if (trackId == null && meta != null) {
-      videoTrackOpts.avcDecoderConfigRecord = meta.decoderConfig?.description
+      videoTrackOpts.avcDecoderConfigRecord = meta.decoderConfig?.description as ArrayBuffer
       trackId = mp4File.addTrack(videoTrackOpts)
       avSyncEvtTool.emit('VideoReady')
       Log.info('VideoEncoder, video track ready, trackId:', trackId)
@@ -264,7 +271,7 @@ function createVideoEncoder(
 
   const videoOpts = opts.video
   encoder.configure({
-    codec: 'avc1.4D0032',
+    codec: opts.video.codec,
     framerate: videoOpts.expectFPS,
     // hardwareAcceleration: 'prefer-hardware',
     // 码率
@@ -309,10 +316,12 @@ function encodeAudioTrack(
   const encoder = new AudioEncoder({
     error: Log.error,
     output: (chunk, meta) => {
-      if (trackId === 0 && meta.decoderConfig?.description != null) {
+      if (trackId === 0) {
+        // 某些设备不会输出 description
+        const desc = meta.decoderConfig?.description
         trackId = mp4File.addTrack({
           ...audioTrackOpts,
-          description: createESDSBox(meta.decoderConfig?.description)
+          description: desc == null ? undefined : createESDSBox(desc)
         })
         avSyncEvtTool.emit('AudioReady')
         Log.info('AudioEncoder, audio track ready, trackId:', trackId)
@@ -336,7 +345,7 @@ function encodeAudioTrack(
   return encoder
 }
 
-export function stream2file(stream: ReadableStream<Uint8Array>): {
+export function _deprecated_stream2file(stream: ReadableStream<Uint8Array>): {
   file: MP4File
   stop: () => void
 } {
@@ -372,94 +381,7 @@ export function stream2file(stream: ReadableStream<Uint8Array>): {
   }
 }
 
-/**
- * 将原始字节流转换成 MP4Sample 流
- */
-class SampleTransform {
-  readable: ReadableStream<
-    | {
-      chunkType: 'ready'
-      data: { info: MP4Info; file: MP4File }
-    }
-    | {
-      chunkType: 'samples'
-      data: { id: number; type: 'video' | 'audio'; samples: MP4Sample[] }
-    }
-  >
 
-  writable: WritableStream<Uint8Array>
-
-  #inputBufOffset = 0
-
-  constructor() {
-    const file = mp4box.createFile()
-    let outCtrlDesiredSize = 0
-    let streamCancelled = false
-    this.readable = new ReadableStream(
-      {
-        start: ctrl => {
-          file.onReady = info => {
-            const vTrackId = info.videoTracks[0]?.id
-            if (vTrackId != null)
-              file.setExtractionOptions(vTrackId, 'video', { nbSamples: 100 })
-
-            const aTrackId = info.audioTracks[0]?.id
-            if (aTrackId != null)
-              file.setExtractionOptions(aTrackId, 'audio', { nbSamples: 100 })
-
-            ctrl.enqueue({ chunkType: 'ready', data: { info, file } })
-            file.start()
-          }
-
-          file.onSamples = (id, type, samples) => {
-            ctrl.enqueue({
-              chunkType: 'samples',
-              data: { id, type, samples }
-            })
-            outCtrlDesiredSize = ctrl.desiredSize ?? 0
-          }
-
-          file.onFlush = () => {
-            ctrl.close()
-          }
-        },
-        pull: ctrl => {
-          outCtrlDesiredSize = ctrl.desiredSize ?? 0
-        },
-        cancel: () => {
-          file.stop()
-          streamCancelled = true
-        }
-      },
-      {
-        // 每条消息 100 个 samples
-        highWaterMark: 50
-      }
-    )
-
-    this.writable = new WritableStream({
-      write: async ui8Arr => {
-        if (streamCancelled) {
-          this.writable.abort()
-          return
-        }
-
-        const inputBuf = ui8Arr.buffer as MP4ArrayBuffer
-        inputBuf.fileStart = this.#inputBufOffset
-        this.#inputBufOffset += inputBuf.byteLength
-        file.appendBuffer(inputBuf)
-
-        // 等待输出的数据被消费
-        while (outCtrlDesiredSize < 0) await sleep(50)
-      },
-      close: () => {
-        file.flush()
-        file.stop()
-        file.onFlush?.()
-      }
-    })
-  }
-}
 
 export function file2stream(
   file: MP4File,
@@ -546,22 +468,112 @@ export function file2stream(
   }
 }
 
-// track is H.264, H.265 or VPX.
-function parseVideoCodecDesc(track: TrakBoxParser): Uint8Array {
-  for (const entry of track.mdia.minf.stbl.stsd.entries) {
-    // @ts-expect-error
-    const box = entry.avcC ?? entry.hvcC ?? entry.vpcC
-    if (box != null) {
-      const stream = new mp4box.DataStream(
-        undefined,
-        0,
-        mp4box.DataStream.BIG_ENDIAN
-      )
-      box.write(stream)
-      return new Uint8Array(stream.buffer.slice(8)) // Remove the box header.
-    }
+function mp4File2OPFSFile(inMP4File: MP4File): () => (Promise<File | null>) {
+  let sendedBoxIdx = 0
+  const boxes = inMP4File.boxes
+  const tracks: Array<{ track: TrakBoxParser; id: number }> = []
+  let totalDuration = 0
+
+  async function write2TmpFile() {
+    const buf = box2Buf(boxes, sendedBoxIdx)
+    sendedBoxIdx = boxes.length
+    // 释放引用，避免内存泄露
+    tracks.forEach(({ track, id }) => {
+      const s = track.samples.at(-1)
+      if (s != null) totalDuration = Math.max(totalDuration, s.cts + s.duration)
+
+      inMP4File.releaseUsedSamples(id, track.samples.length)
+      track.samples = []
+    })
+    inMP4File.mdats = []
+    inMP4File.moofs = []
+    if (buf != null) await tmpFileWriter?.write(buf)
   }
-  throw Error('avcC, hvcC or VPX not found')
+
+  let moovPrevBoxes: typeof boxes = []
+  function moovBoxReady() {
+    if (moovPrevBoxes.length > 0) return true
+
+    const moovIdx = boxes.findIndex(box => box.type === 'moov')
+    if (moovIdx === -1) return false
+
+    moovPrevBoxes = boxes.slice(0, moovIdx + 1)
+    sendedBoxIdx = moovIdx + 1
+
+    if (tracks.length === 0) {
+      for (let i = 1; true; i += 1) {
+        const track = inMP4File.getTrackById(i)
+        if (track == null) break
+        tracks.push({ track, id: i })
+      }
+    }
+
+    return true
+  }
+
+  let timerId = 0
+  let tmpFileHandle: FileSystemFileHandle | null = null
+  let tmpFileWriter: FileSystemWritableFileStream | null = null
+
+  const initPromise = (async () => {
+    const opfsRoot = await navigator.storage.getDirectory()
+    tmpFileHandle = await opfsRoot.getFileHandle(
+      Math.random().toString(),
+      { create: true }
+    )
+    tmpFileWriter = await tmpFileHandle.createWritable()
+
+    timerId = self.setInterval(() => {
+      if (!moovBoxReady()) return
+      write2TmpFile()
+    }, 100)
+  })()
+
+  let stoped = false
+  return async () => {
+    if (stoped) throw Error('File exported')
+    stoped = true
+
+    await initPromise
+    clearInterval(timerId)
+
+    if (!moovBoxReady() || tmpFileHandle == null) return null
+    inMP4File.flush()
+    await write2TmpFile()
+    await tmpFileWriter?.close()
+
+    const moov = moovPrevBoxes.find(box => box.type === 'moov') as (typeof inMP4File.moov | undefined)
+    if (moov == null) return null
+
+    moov.mvhd.duration = totalDuration
+
+    const opfsRoot = await navigator.storage.getDirectory()
+    const rsFileHandle = await opfsRoot.getFileHandle(
+      Math.random().toString(),
+      { create: true }
+    )
+    const writer = await rsFileHandle.createWritable()
+    const buf = box2Buf(moovPrevBoxes, 0)!
+    await writer.write(buf)
+    await writer.write(await tmpFileHandle.getFile())
+    await writer.close()
+
+    return await rsFileHandle.getFile()
+  }
+
+  function box2Buf(source: typeof boxes, startIdx: number): Uint8Array | null {
+    if (startIdx >= source.length) return null
+
+    const ds = new mp4box.DataStream()
+    ds.endianness = mp4box.DataStream.BIG_ENDIAN
+
+    for (let i = startIdx; i < source.length; i++) {
+      if (source[i] === null) continue
+      source[i].write(ds)
+      delete source[i]
+    }
+    return new Uint8Array(ds.buffer)
+  }
 }
 
 /**
@@ -584,141 +596,102 @@ function chunk2MP4SampleOpts(
   }
 }
 
-function extractFileConfig(file: MP4File, info: MP4Info) {
-  const vTrack = info.videoTracks[0]
-  const rs: {
-    videoTrackConf?: VideoTrackOpts
-    videoDecoderConf?: Parameters<VideoDecoder['configure']>[0]
-    audioTrackConf?: AudioTrackOpts
-    audioDecoderConf?: Parameters<AudioDecoder['configure']>[0]
-  } = {}
-  if (vTrack != null) {
-    const videoDesc = parseVideoCodecDesc(file.getTrackById(vTrack.id)).buffer
-    const { descKey, type } = vTrack.codec.startsWith('avc1')
-      ? { descKey: 'avcDecoderConfigRecord', type: 'avc1' }
-      : vTrack.codec.startsWith('hvc1')
-        ? { descKey: 'hevcDecoderConfigRecord', type: 'hvc1' }
-        : { descKey: '', type: '' }
-    if (descKey !== '') {
-      rs.videoTrackConf = {
-        timescale: vTrack.timescale,
-        duration: vTrack.duration,
-        width: vTrack.video.width,
-        height: vTrack.video.height,
-        brands: info.brands,
-        type,
-        [descKey]: videoDesc
-      }
-    }
 
-    rs.videoDecoderConf = {
-      codec: vTrack.codec,
-      codedHeight: vTrack.video.height,
-      codedWidth: vTrack.video.width,
-      description: videoDesc
-    }
-  }
-
-  const aTrack = info.audioTracks[0]
-  if (aTrack != null) {
-    rs.audioTrackConf = {
-      timescale: aTrack.timescale,
-      samplerate: aTrack.audio.sample_rate,
-      channel_count: aTrack.audio.channel_count,
-      hdlr: 'soun',
-      type: aTrack.codec.startsWith('mp4a') ? 'mp4a' : aTrack.codec
-    }
-    rs.audioDecoderConf = {
-      codec: aTrack.codec.startsWith('mp4a')
-        ? DEFAULT_AUDIO_CONF.codec
-        : aTrack.codec,
-      numberOfChannels: aTrack.audio.channel_count,
-      sampleRate: aTrack.audio.sample_rate
-    }
-  }
-  return rs
-}
 
 /**
  * 快速顺序合并多个mp4流，要求所有mp4的属性是一致的
  * 属性包括（不限于）：音视频编码格式、分辨率、采样率
  */
-export function fastConcatMP4(streams: ReadableStream<Uint8Array>[]) {
+export async function fastConcatMP4(streams: ReadableStream<Uint8Array>[]): Promise<ReadableStream<Uint8Array>> {
   Log.info('fastConcatMP4, streams len:', streams.length)
   const outfile = mp4box.createFile()
-  const { stream, stop: stopOutStream } = file2stream(outfile, 500, () => { })
 
-  async function run() {
-    let vTrackId = 0
-    let vDTS = 0
-    let vCTS = 0
-    let aTrackId = 0
-    let aDTS = 0
-    let aCTS = 0
-    // ts bug, 不能正确识别类型
-    let lastVSamp: any = null
-    let lastASamp: any = null
-    for (const stream of streams) {
-      await new Promise<void>(async resolve => {
-        let curFile: MP4File | null = null
-        autoReadStream(stream.pipeThrough(new SampleTransform()), {
-          onDone: resolve,
-          onChunk: async ({ chunkType, data }) => {
-            if (chunkType === 'ready') {
-              const { videoTrackConf, audioTrackConf } = extractFileConfig(
-                data.file,
-                data.info
-              )
-              curFile = data.file
-              if (vTrackId === 0 && videoTrackConf != null) {
-                vTrackId = outfile.addTrack(videoTrackConf)
-              }
-              if (aTrackId === 0 && audioTrackConf != null) {
-                aTrackId = outfile.addTrack(audioTrackConf)
-              }
-            } else if (chunkType === 'samples') {
-              const { id: curId, type, samples } = data
-              const trackId = type === 'video' ? vTrackId : aTrackId
-              const offsetDTS = type === 'video' ? vDTS : aDTS
-              const offsetCTS = type === 'video' ? vCTS : aCTS
+  const dumpFile = mp4File2OPFSFile(outfile)
+  await concatStreamsToMP4BoxFile(streams, outfile)
+  const opfsFile = await dumpFile()
+  if (opfsFile == null) throw Error('Can not generate file from streams')
+  return opfsFile.stream()
+}
 
-              samples.forEach(s => {
-                outfile.addSample(trackId, s.data, {
-                  duration: s.duration,
-                  dts: s.dts + offsetDTS,
-                  cts: s.cts + offsetCTS,
-                  is_sync: s.is_sync
-                })
+async function concatStreamsToMP4BoxFile(streams: ReadableStream<Uint8Array>[], outfile: MP4File) {
+  let vTrackId = 0
+  let vDTS = 0
+  let vCTS = 0
+  let aTrackId = 0
+  let aDTS = 0
+  let aCTS = 0
+  // ts bug, 不能正确识别类型
+  let lastVSamp: any = null
+  let lastASamp: any = null
+  for (const stream of streams) {
+    await new Promise<void>(async resolve => {
+      let curFile: MP4File | null = null
+      autoReadStream(stream.pipeThrough(new SampleTransform()), {
+        onDone: resolve,
+        onChunk: async ({ chunkType, data }) => {
+          if (chunkType === 'ready') {
+            const { videoTrackConf, audioTrackConf } = extractFileConfig(
+              data.file,
+              data.info
+            )
+            curFile = data.file
+            if (vTrackId === 0 && videoTrackConf != null) {
+              vTrackId = outfile.addTrack(videoTrackConf)
+            }
+            if (aTrackId === 0 && audioTrackConf != null) {
+              aTrackId = outfile.addTrack(audioTrackConf)
+            }
+          } else if (chunkType === 'samples') {
+            const { id: curId, type, samples } = data
+            const trackId = type === 'video' ? vTrackId : aTrackId
+            const offsetDTS = type === 'video' ? vDTS : aDTS
+            const offsetCTS = type === 'video' ? vCTS : aCTS
+
+            samples.forEach(s => {
+              outfile.addSample(trackId, s.data, {
+                duration: s.duration,
+                dts: s.dts + offsetDTS,
+                cts: s.cts + offsetCTS,
+                is_sync: s.is_sync
               })
-              curFile?.releaseUsedSamples(curId, samples.length)
+            })
+            curFile?.releaseUsedSamples(curId, samples.length)
 
-              const lastSamp = samples.at(-1)
-              if (lastSamp == null) return
-              if (type === 'video') {
-                lastVSamp = lastSamp
-              } else if (type === 'audio') {
-                lastASamp = lastSamp
-              }
+            const lastSamp = samples.at(-1)
+            if (lastSamp == null) return
+            if (type === 'video') {
+              lastVSamp = lastSamp
+            } else if (type === 'audio') {
+              lastASamp = lastSamp
             }
           }
-        })
+        }
       })
-      if (lastVSamp != null) {
-        vDTS += lastVSamp.dts
-        vCTS += lastVSamp.cts
-      }
-      if (lastASamp != null) {
-        aDTS += lastASamp.dts
-        aCTS += lastASamp.cts
-      }
+    })
+    if (lastVSamp != null) {
+      vDTS += lastVSamp.dts
+      vCTS += lastVSamp.cts
     }
-
-    stopOutStream()
+    if (lastASamp != null) {
+      aDTS += lastASamp.dts
+      aCTS += lastASamp.cts
+    }
   }
+}
 
-  run().catch(Log.error)
+/**
+ * Convert live stream to OPFS File, fix duration being 0
+ * @param stream mp4 file stream
+ * @returns File
+ */
+export async function mp4StreamToOPFSFile(stream: ReadableStream<Uint8Array>): Promise<File> {
+  const outfile = mp4box.createFile()
 
-  return stream
+  const dumpFile = mp4File2OPFSFile(outfile)
+  await concatStreamsToMP4BoxFile([stream], outfile)
+  const opfsFile = await dumpFile()
+  if (opfsFile == null) throw Error('Can not generate file from stream')
+  return opfsFile
 }
 
 function createMP4AudioSampleDecoder(
@@ -980,17 +953,6 @@ export function mixinMP4AndAudio(
   return outStream
 }
 
-function sample2ChunkOpts(
-  s: MP4Sample
-): EncodedAudioChunkInit | EncodedVideoChunkInit {
-  return {
-    type: (s.is_sync ? 'key' : 'delta') as EncodedVideoChunkType,
-    timestamp: (1e6 * s.cts) / s.timescale,
-    duration: (1e6 * s.duration) / s.timescale,
-    data: s.data
-  }
-}
-
 function createESDSBox(config: ArrayBuffer | ArrayBufferView) {
   const configlen = config.byteLength
   const buf = new Uint8Array([
@@ -1037,3 +999,4 @@ function createESDSBox(config: ArrayBuffer | ArrayBufferView) {
   esdsBox.parse(new mp4box.DataStream(buf, 0, mp4box.DataStream.BIG_ENDIAN))
   return esdsBox
 }
+

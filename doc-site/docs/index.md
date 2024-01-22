@@ -1,11 +1,11 @@
 ---
-title: A static site based on dumi
+title: WebAV Doc Site
 hero:
   title: WebAV
-  description: WebAV Doc Site
+  description: '<strong>WebAV Doc Site</strong>'
   actions:
-    - text: API (建设中...)
-      link: /api/av-canvas
+    - text: Guide
+      link: /guide/
     - text: DEMO
-      link: /demo/1_1-decode-video
+      link: /demo/
 ---

@@ -6,9 +6,9 @@ An audio/video toolkit built with pure web technologies, planned to include crea
 
 ## Motivation
 
-Chrome 94 released the WebCodecs API, meaning JS can now handle audio/video as well. Before this, frontend developers could only use ffmpeg.js in limited scenarios. Through simple tests of decoding and re-encoding videos, it was found WebCodecs has 20x the performance of ffmpeg.js.
+Chrome 94 released the WebCodecs API, meaning JS can now handle audio/video as well. Before this, frontend developers could only use ffmpeg.wasm in limited scenarios. Through simple tests of decoding and re-encoding videos, it was found WebCodecs has 20x the performance of ffmpeg.wasm.
 
-Chrome 94 开放了 WebCodecs API，意味着 JS 也能处理音视频了。在此之前，前端开发在会在有限的场景使用 ffmpeg.js，经过简单地测试解码和重编码视频发现，WebCodecs 性能是 ffmpeg.js 的 20 倍。
+Chrome 94 开放了 WebCodecs API，意味着 JS 也能处理音视频了。在此之前，前端开发在会在有限的场景使用 ffmpeg.wasm，经过简单地测试解码和重编码视频发现，WebCodecs 性能是 ffmpeg.wasm 的 20 倍。
 
 This is an experimental project attempting to provide easy-to-use APIs for handling audio/video data in the browser. The project is under active development, feel free to open issues to report bugs or suggest new features.
 
@@ -57,7 +57,7 @@ This is an experimental project attempting to provide easy-to-use APIs for handl
 
 ## DEMO
 
-<https://hughfenghen.github.io/WebAV/demo/1_1-decode-video>
+<https://hughfenghen.github.io/WebAV/demo/>
 
 ## Development
 
@@ -84,6 +84,8 @@ This repo uses lerna + yarn to manage packages.
    1. 复制控制台中打印的 baseUrl，类似 `http://localhost:6066/`
    2. 确定对应 DEMO 的 path，是 `packages/av-cliper/demo` 目录下的文件名，如 `concat-media.html`
    3. 在浏览器打开最终 URL：`http://localhost:6066/concat-media.html`
+
+若你有意贡献代码，建议先跟通过 Github Issue、Discussions、微信（`liujun_fenghen`）与作者讨论
 
 ---
 

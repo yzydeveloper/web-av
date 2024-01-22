@@ -68,6 +68,7 @@ document.querySelector('#mp4-img')?.addEventListener('click', () => {
     const com = new Combinator({
       width: 1280,
       height: 720,
+      videoCodec: 'avc1.42E032',
       bgColor: 'white'
     })
 
@@ -332,6 +333,6 @@ document.querySelector('#complex')?.addEventListener('click', () => {
     const { loadStream } = playOutputStream(mp4List, playerContiner)
 
     // then concat multiple videos
-    await loadStream(fastConcatMP4(await Promise.all(coms)))
+    await loadStream(await fastConcatMP4(await Promise.all(coms)))
   })().catch(Log.error)
 })

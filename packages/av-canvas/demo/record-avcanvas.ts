@@ -2,7 +2,7 @@ import { Combinator } from '@webav/av-cliper'
 import {
   AVCanvas,
   AudioSprite,
-  FontSprite,
+  TextSprite,
   ImgSprite,
   VideoSprite
 } from '../src/index'
@@ -81,7 +81,9 @@ document.querySelector('#localVideo')?.addEventListener('click', () => {
         }
       ]
     })
-    const vs = new VideoSprite('vs', await imgFH.getFile())
+    const vs = new VideoSprite('vs', await imgFH.getFile(), {
+      audioCtx: avCvs.spriteManager.audioCtx
+    })
     await avCvs.spriteManager.addSprite(vs)
   })().catch(console.error)
 })
@@ -98,15 +100,17 @@ document.querySelector('#localAudio')?.addEventListener('click', () => {
         }
       ]
     })
-    const as = new AudioSprite('vs', await imgFH.getFile())
+    const as = new AudioSprite('vs', await imgFH.getFile(), {
+      audioCtx: avCvs.spriteManager.audioCtx
+    })
     await avCvs.spriteManager.addSprite(as)
   })().catch(console.error)
 })
 
 document.querySelector('#fontExamp')?.addEventListener('click', () => {
   ; (async () => {
-    const fs = new FontSprite('font', '示例文字')
-    await avCvs.spriteManager.addSprite(fs)
+    const textSpr = new TextSprite('text', '示例文字')
+    await avCvs.spriteManager.addSprite(textSpr)
   })().catch(console.error)
 })
 

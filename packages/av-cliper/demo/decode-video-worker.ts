@@ -11,7 +11,5 @@ import { MP4Clip } from '../src/clips'
     if (video != null && state === 'success') {
       video.close()
     }
-    time += 33000
-  }
-  clip.destroy()
-})()
+    clip.destroy()
+  })()
